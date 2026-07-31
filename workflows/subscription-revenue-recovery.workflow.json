@@ -1,0 +1,236 @@
+{
+  "revision": "2026-07-31-initial",
+  "slug": "subscription-revenue-recovery",
+  "name": "Subscription Revenue Recovery",
+  "description": "Find recurring-revenue leakage, connect it to rep attribution when the data supports it, quantify recovery scenarios, and publish a CEO-ready dashboard and page brief. Read-only: it proposes interventions but never changes customers, subscriptions, orders, reps, or campaigns.",
+  "maxParallel": 2,
+  "finalGate": {
+    "stepId": "ceo-readiness-review",
+    "allowNeedsReview": false
+  },
+  "steps": [
+    {
+      "id": "evidence-map",
+      "name": "Map retention evidence",
+      "prompt": "Build a fresh evidence map for this company's subscription-retention analysis. This is a read-only discovery step.\n\n1. Call `db_schema` with `mode: \"overview\"`. Then call `db_schema` searches for `subscription`, `order`, `payment`, `rep`, `referr`, `sponsor`, and `affiliate`. Use `mode: \"tables\"` on the smallest set of candidate tables needed to understand subscription status, recurring amount and cadence, orders or payment attempts, customer identity, and rep/referral attribution. Do not guess names from another company or a prior run.\n2. Use bounded SELECT-only `db_query` calls to establish record counts, minimum and maximum event dates, status values, null coverage for the important fields, and the newest source timestamp. Never use `SELECT *`; name columns and cap detail samples.\n3. Write a join map with fully qualified table and column names for: subscription -> customer; subscription -> order/payment event; customer/order/subscription -> acquiring or credited rep/referrer. Mark a path `unavailable` when the schema cannot establish it. Similar names are not proof of a join.\n4. Choose one analysis window from the evidence: prefer the latest complete 90 days; shorten it only when the dataset is younger and say why. Record the exact inclusive start and exclusive end timestamps. Separate observed facts from assumptions. Empty or missing subscription data is a valid finding, not a reason to invent a substitute.\n5. Do not call a mutating tool or issue non-SELECT SQL. Do not expose customer email, phone, street address, payment data, or other customer PII in the output.\n\nEnd with `STEP_OUTPUT:` followed by a compact object containing `window`, `freshness`, `tables`, `joins`, `coverage_counts`, `status_values`, `currency_basis`, `data_gaps`, and `assumptions`. If no usable subscription data exists, set `subscription_analysis_available: false` and explain the exact missing evidence.",
+      "target": {
+        "type": "manager"
+      },
+      "acceptance": [
+        "The report names the exact inclusive start and exclusive end timestamps, the newest source timestamp, subscription record count, and whether the source covers the full intended window.",
+        "Every table, column, and join used later is identified from live `db_schema` evidence with a fully qualified name; any unavailable subscription, payment, or rep-attribution path is explicitly marked unavailable rather than guessed.",
+        "Bounded SELECT-only queries establish status values, date coverage, important-field null coverage, and currency basis without returning customer contact, address, or payment PII.",
+        "The output distinguishes observed facts, calculated values, assumptions, and data gaps, including an honest no-subscription-data branch when necessary."
+      ],
+      "qa": {
+        "enabled": true,
+        "strictness": "strict",
+        "onFail": "stop",
+        "requiredTools": [
+          {
+            "tool": "db_schema",
+            "minSuccessfulCalls": 3,
+            "distinctBy": [
+              "mode"
+            ]
+          },
+          {
+            "tool": "db_query",
+            "minSuccessfulCalls": 1
+          }
+        ]
+      },
+      "dependsOn": [],
+      "maxReworkRounds": 2,
+      "recovery": {
+        "mode": "manual"
+      }
+    },
+    {
+      "id": "lifecycle-leakage",
+      "name": "Quantify lifecycle leakage",
+      "prompt": "Quantify recurring-revenue leakage from the live evidence map. Stay read-only.\n\nRead the completed `evidence-map` output first and use only its verified schema, joins, window, and currency basis. If `subscription_analysis_available` is false, produce a precise setup/data-gap report and stop; do not substitute ordinary orders and call them subscriptions.\n\nUse bounded SELECT-only `db_query` calls to calculate, when the fields exist:\n- subscription count and normalized recurring value by lifecycle status; keep active, paused, past-due/payment-failed, cancelled, expired, and unknown statuses separate;\n- new subscriptions, cancellations, pauses, resumptions/reactivations, skips, and failed/retried/paid renewal events within the chosen window;\n- cancellation or failure timing by completed billing cycle or subscription age band, with an explicit `not available` when no reliable cycle/age evidence exists;\n- recurring value currently exposed to involuntary failure separately from paused/cancelled value; do not label every non-active subscription recoverable;\n- the top product or plan families represented in exposed recurring value when a defensible join exists.\n\nNormalize mixed billing intervals to a monthly basis only when amount, interval unit, and interval count are all present. State the formula. Never add values across currencies; report separate currency blocks unless the data contains a documented base-currency conversion. Reconcile each headline to a status-level total and report the delta; a non-zero unexplained delta is a blocker, not rounding.\n\nDo not mutate subscriptions, retry payments, attach discounts, contact customers, or create campaigns. Do not expose customer PII.\n\nEnd with `STEP_OUTPUT:` containing `window`, `freshness`, `currency_blocks`, `status_summary`, `event_summary`, `cycle_or_age_cohorts`, `involuntary_exposure`, `paused_value`, `cancelled_value`, `plan_concentration`, `reconciliation`, `data_gaps`, and `assumptions`.",
+      "target": {
+        "type": "manager"
+      },
+      "acceptance": [
+        "Live SELECT-only queries independently reproduce the reported lifecycle-status counts and recurring-value totals for the exact evidence-map window.",
+        "Involuntary payment exposure is kept separate from paused, cancelled, expired, and unknown value; the report never calls all non-active value recoverable revenue.",
+        "Monthly normalization states its formula and uses only records with amount plus interval unit/count; different currencies remain separate unless a documented base-currency field is used.",
+        "Headline totals reconcile to the status-level evidence with the delta shown, and missing lifecycle, cycle, payment-event, or plan evidence is reported rather than inferred."
+      ],
+      "qa": {
+        "enabled": true,
+        "strictness": "strict",
+        "onFail": "continue",
+        "requiredTools": [
+          {
+            "tool": "db_query",
+            "minSuccessfulCalls": 2,
+            "distinctBy": [
+              "sql"
+            ]
+          }
+        ]
+      },
+      "dependsOn": [
+        "evidence-map"
+      ],
+      "maxReworkRounds": 2,
+      "recovery": {
+        "mode": "manual"
+      }
+    },
+    {
+      "id": "rep-attribution",
+      "name": "Trace rep attribution",
+      "prompt": "Measure how subscription acquisition and retention connect to reps, referrers, sponsors, or affiliates, using only the verified live join paths. Stay read-only.\n\nRead the completed `evidence-map` output. If it marks rep/referral attribution unavailable, prove that no reliable path was found, return a graceful `attribution_available: false` result, and do not manufacture an attribution model.\n\nWhen a verified path exists, use bounded SELECT-only `db_query` calls to calculate for the same window and currency rules as the lifecycle analysis:\n- active subscription count and normalized recurring value attributed vs unattributed;\n- new subscription count/value by credited rep or referral source;\n- involuntary payment exposure and cancellations by credited rep or referral source;\n- a minimum-volume quality view that prevents one tiny cohort from outranking a large cohort solely on a percentage; show numerator and denominator beside every rate;\n- the highest-value rep-led intervention cohorts, identified by rep id plus display name only when available. Do not expose subscriber names or contact details.\n\nNever assume sponsor, enroller, seller, buyer rep, affiliate, or referring rep mean the same thing. Name the exact attribution field used and label its business meaning `unverified` unless the schema or stored metadata defines it. Do not turn correlation into causation: differences between rep cohorts are signals for review, not proof a rep caused churn.\n\nReconcile attributed plus unattributed counts/value to the eligible population and report the delta. Do not edit rep credit, reassociate an order, send a message, or launch an incentive.\n\nEnd with `STEP_OUTPUT:` containing `attribution_available`, `attribution_definition`, `window`, `freshness`, `coverage`, `rep_cohorts`, `unattributed`, `intervention_cohorts`, `reconciliation`, `data_gaps`, and `assumptions`.",
+      "target": {
+        "type": "manager"
+      },
+      "acceptance": [
+        "The report uses a schema-proven attribution join or explicitly returns `attribution_available: false`; it never treats similar rep/referrer/sponsor field names as interchangeable without evidence.",
+        "Every rep cohort rate includes its numerator and denominator, low-volume cohorts are not over-ranked, and the output contains no subscriber contact, address, or payment PII.",
+        "Attributed plus unattributed subscription counts and recurring value reconcile to the eligible population for each currency, with any delta shown.",
+        "The report labels attribution meaning and causality limits honestly and performs no rep-credit, order, subscription, message, campaign, or incentive mutation."
+      ],
+      "qa": {
+        "enabled": true,
+        "strictness": "strict",
+        "onFail": "continue",
+        "requiredTools": [
+          {
+            "tool": "db_schema",
+            "minSuccessfulCalls": 1
+          },
+          {
+            "tool": "db_query",
+            "minSuccessfulCalls": 2,
+            "distinctBy": [
+              "sql"
+            ]
+          }
+        ]
+      },
+      "dependsOn": [
+        "evidence-map"
+      ],
+      "maxReworkRounds": 2,
+      "recovery": {
+        "mode": "manual"
+      }
+    },
+    {
+      "id": "recovery-model",
+      "name": "Model recovery value",
+      "prompt": "Turn the verified lifecycle and attribution evidence into one prioritized, quantified recovery model. This remains analysis-only.\n\nRead the completed outputs from `lifecycle-leakage` and `rep-attribution`, including any needs-review findings. Do not hide a needs-review or unavailable branch. Re-check only the smallest live aggregates needed to resolve contradictions; do not silently replace an upstream result.\n\nProduce:\n1. A baseline table by currency: active normalized recurring value, involuntary payment exposure, paused value, cancellations in-window, and the exact record counts behind each amount. Never sum currencies.\n2. Three transparent sensitivity scenarios applied ONLY to the eligible involuntary-exposure base: 5%, 10%, and 20% recovery. Label all three `Scenario assumption — not forecast`. Show the formula (`eligible exposure x assumed recovery rate`) and both monthly and annualized values; annualized means `monthly x 12`, not observed annual revenue. If there is no amount field, use counts and omit dollar scenarios.\n3. A ranked intervention plan with no more than three moves: payment-retry/dunning review, paused-member save review, early-cycle cancellation review, or rep-led outreach/coaching only when the evidence supports it. For each, name the eligible population, live value base, owner, success metric, holdout or before/after measurement, and the approval/write that would be required to execute it.\n4. A CEO-ready headline that states one observed exposure number and one clearly labeled scenario value. Also provide a conservative alternative headline that uses counts when currency/value evidence is incomplete.\n\nHard rules: do not claim modeled value is recovered revenue; do not invent a recovery rate, causal explanation, or industry benchmark; do not expose PII; do not mutate Fluid data or contact anyone. Any execution is a separate follow-up that requires explicit user approval after reviewing this analysis.\n\nEnd with `STEP_OUTPUT:` containing `baseline`, `scenarios`, `ranked_interventions`, `ceo_headlines`, `measurement_plan`, `write_actions_requiring_approval`, `data_gaps`, and `assumptions`.",
+      "target": {
+        "type": "manager"
+      },
+      "acceptance": [
+        "The baseline uses only live upstream evidence, keeps currencies separate, names record counts behind amounts, and does not treat paused or cancelled value as involuntary-payment exposure.",
+        "The 5%, 10%, and 20% cases are visibly labeled scenario assumptions rather than forecasts, use the shown eligible-exposure formula, and annualize only by multiplying a monthly value by 12.",
+        "Each of at most three interventions names an evidence-backed eligible population, success metric, measurement method, accountable owner, and the exact future write/action requiring explicit approval.",
+        "The CEO headline distinguishes observed exposure from modeled opportunity, supplies a count-based fallback, contains no PII, and claims no action or recovery that did not occur."
+      ],
+      "qa": {
+        "enabled": true,
+        "strictness": "strict",
+        "onFail": "continue",
+        "requiredTools": [
+          {
+            "tool": "db_query",
+            "minSuccessfulCalls": 1
+          }
+        ]
+      },
+      "dependsOn": [
+        "lifecycle-leakage",
+        "rep-attribution"
+      ],
+      "maxReworkRounds": 2,
+      "recovery": {
+        "mode": "manual"
+      }
+    },
+    {
+      "id": "publish-dashboard",
+      "name": "Publish recovery dashboard",
+      "prompt": "Publish a CEO-ready Subscription Revenue Recovery dashboard from the verified recovery model, then write the copy block that can be used directly on a CEO value page.\n\nRead the completed `recovery-model` output and preserve every needs-review finding, data gap, currency boundary, and scenario label. Call `list_dashboards` first. Then assemble one descriptor and call `show_dashboard`. The dashboard should be useful on a large screen and legible in a short demo:\n- title `Subscription Revenue Recovery`; subtitle names the evidence window and says `Read-only analysis`; set `dataAsOf` to the actual evidence freshness timestamp;\n- a headline `stat_tiles` row for active recurring value, involuntary exposure, exposed subscription count, and the 10% scenario, omitting any metric the evidence cannot support;\n- one status-mix `donut_chart` or `stat_rows` card with raw numeric values and semantic format hints;\n- one 5%/10%/20% `hero_chart` or `stat_rows` scenario card whose title includes `Scenario assumptions — not forecasts`;\n- one rep-attribution leaderboard only when attribution is available, showing rep-level aggregates rather than subscriber PII; otherwise an `insight_banner` that states the verified attribution gap;\n- one compact intervention table with eligible population, live value base, success metric, and owner;\n- one assumptions/data-quality banner.\n\nPass raw numbers to the descriptor with semantic format hints; never pre-format numeric strings. The dashboard's `currency` and `currency_compact` formatters render a dollar sign, so use them only for values whose verified currency is USD. For every other currency, keep the metric numeric with `number` or `compact` and put the exact ISO currency code in the card title or metric label. Keep currencies in visibly separate cards/sections and do not publish an aggregate across them. If `show_dashboard` returns a validation error, repair the descriptor and call it again without changing the underlying metrics.\n\nAfter the dashboard succeeds, render a `## CEO value page brief` in Markdown with exactly these sections: `Headline`, `What the live data shows`, `Modeled opportunity`, `Three actions`, `How we will measure`, `Assumptions and data gaps`, and `Approval boundary`. Keep it under 350 words. It must directly distinguish observed values from scenarios and state that no customers, subscriptions, payments, rep credits, messages, campaigns, or storefront content were changed.\n\nSaving/showing this local dashboard is the only state change in this step. Do not mutate Fluid data and do not initiate an intervention.\n\nEnd with `STEP_OUTPUT:` containing `dashboard_title`, `dashboard_id` when returned, `data_as_of`, `window`, `headline`, `observed_metrics`, `scenario_metrics`, `interventions`, `ceo_value_page_brief`, `assumptions`, `data_gaps`, and `fluid_writes_performed: false`.",
+      "target": {
+        "type": "manager"
+      },
+      "acceptance": [
+        "`list_dashboards` shows a saved dashboard titled `Subscription Revenue Recovery`, and the deliverable reports its id when available plus the exact data-as-of timestamp and evidence window.",
+        "Dashboard headline, status, scenario, attribution, and intervention values reproduce the recovery-model output, keep currencies separate, use raw numeric metrics with format hints, use dollar formatters only for verified USD values, label every other numeric currency metric with its ISO code, and expose no subscriber PII.",
+        "Every modeled value is visibly labeled `Scenario assumption — not forecast`; unavailable attribution or currency evidence becomes a visible data-quality banner rather than an invented card.",
+        "The CEO value page brief is under 350 words, contains all seven required sections, directly separates live observations from modeled scenarios, and states the approval boundary and `fluid_writes_performed: false`."
+      ],
+      "qa": {
+        "enabled": true,
+        "strictness": "strict",
+        "onFail": "continue",
+        "requiredTools": [
+          {
+            "tool": "list_dashboards",
+            "minSuccessfulCalls": 1
+          },
+          {
+            "tool": "db_query",
+            "minSuccessfulCalls": 1
+          }
+        ]
+      },
+      "dependsOn": [
+        "recovery-model"
+      ],
+      "maxReworkRounds": 2,
+      "recovery": {
+        "mode": "manual"
+      }
+    },
+    {
+      "id": "ceo-readiness-review",
+      "name": "Review CEO readiness",
+      "prompt": "Perform the final independent business-readiness review of the Subscription Revenue Recovery result. This is a read-only gate, not another analysis build.\n\nRead the completed outputs and QA findings from `evidence-map`, `lifecycle-leakage`, `rep-attribution`, `recovery-model`, and `publish-dashboard`. Call `list_dashboards` to confirm the saved artifact and use the minimum bounded SELECT-only `db_query` checks needed to re-prove the headline's observed count/value and the eligible base used for its scenario.\n\nFail the gate when any of these is true: an observed number cannot be reproduced; currencies were combined without a documented conversion; modeled recovery reads like achieved or forecast revenue; a rep relationship was guessed; a needs-review finding was hidden; customer PII appears; the dashboard is missing; the CEO brief omits its approval boundary; or any Fluid write/action was claimed or performed. A complete no-data or partial-data result may pass only when the dashboard and CEO brief visibly say what is unavailable and use the count-based conservative headline.\n\nReturn a compact handoff for the person presenting this result:\n- `CEO headline`: one sentence;\n- `Live proof`: exact window, freshness, eligible count, observed exposure by currency, and source tables;\n- `Modeled upside`: the 5%/10%/20% sensitivity table, explicitly assumptions;\n- `Rep angle`: the verified attribution result or the exact gap;\n- `Three actions`: each with metric and approval required;\n- `Demo path`: three clicks or sentences covering dashboard -> biggest observed leak -> approval-safe action;\n- `CEO page copy`: repeat the final under-350-word page brief verbatim;\n- `Unresolved`: every data or QA limitation.\n\nDo not mutate anything. End with `STEP_OUTPUT:` containing `ready: true|false`, `dashboard_id`, `ceo_headline`, `live_proof`, `modeled_upside`, `rep_angle`, `three_actions`, `demo_path`, `ceo_page_copy`, `approval_boundary`, and `unresolved`.",
+      "target": {
+        "type": "manager"
+      },
+      "acceptance": [
+        "The saved `Subscription Revenue Recovery` dashboard exists and its observed headline count/value is independently reproducible from bounded SELECT-only live queries for the stated window and freshness.",
+        "Currencies remain separate, the eligible exposure base is reproduced, and 5%/10%/20% values are correct sensitivity arithmetic visibly labeled assumptions rather than forecasts or achieved revenue.",
+        "The handoff includes the verified rep-attribution result or exact gap, no hidden needs-review findings or PII, three approval-gated actions with success metrics, and a three-beat demo path.",
+        "The final CEO page copy stays under 350 words, distinguishes live proof from modeled upside, says no Fluid writes/interventions were performed, and explicitly requires user approval before any execution."
+      ],
+      "qa": {
+        "enabled": true,
+        "strictness": "strict",
+        "onFail": "stop",
+        "requiredTools": [
+          {
+            "tool": "list_dashboards",
+            "minSuccessfulCalls": 1
+          },
+          {
+            "tool": "db_query",
+            "minSuccessfulCalls": 2,
+            "distinctBy": [
+              "sql"
+            ]
+          }
+        ]
+      },
+      "dependsOn": [
+        "evidence-map",
+        "lifecycle-leakage",
+        "rep-attribution",
+        "recovery-model",
+        "publish-dashboard"
+      ],
+      "maxReworkRounds": 2,
+      "recovery": {
+        "mode": "manual"
+      }
+    }
+  ]
+}
