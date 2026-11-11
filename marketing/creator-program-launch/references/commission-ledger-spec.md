@@ -27,6 +27,7 @@ Rates are stored as a percent with up to two decimals. Every change to these set
 ## Who earns
 
 - **Level one** is `order_journey.volume_rep` from GET `/api/v202506/orders/:id/journey`. `attribution_rep` is who the shopper came through; `volume_rep` is who earns. They can differ, and `volume_rep` can be empty. An order with no `volume_rep` writes no lines; an order nobody was credited for reads `not_applicable` in `attribution_state` and `volume_state`.
+- `volume_rep` carries `id`, `first_name` and `last_name`. That `id` is the member's `legacy_user_company_id`, not the member's uuid and not their customer id. Key earners on it, and resolve the member with GET `/api/v2025-06/members/:id`, which accepts either that id or the uuid.
 - **Level two** is whoever brought the level-one creator in.
   - `level2_source: genealogy` is allowed only when GET `/api/company/v2026-10/genealogy/trees` reports `authority` as `authoritative` or `replica`. Read the creator's `enroller` (who signed them up) from the genealogy node routes. If the company's tree also uses a different `sponsor`, ask the admin once which of the two the plan pays and save the answer.
   - `level2_source: app` keeps an `invited_by` column in this app, set once when a creator joins and changed only by an admin, with the change logged. Reject a creator inviting themselves, and reject an inviter who joined after the creator they claim to have invited, so no loop can form.
@@ -61,7 +62,7 @@ Scope every read and write to the installation's company. Never fall back to a c
 ## Events
 
 1. List the webhook events this company can subscribe to with GET `/api/webhooks/schemas` (under `schemas`) and pick the ones for an order being placed or paid, edited, refunded and cancelled. The list includes `order_created`, `order_completed`, `order_edited`, `order_refunded` and `order_cancelled`. Read each schema before handling it.
-2. **Order placed.** Credit lands after the order. Wait, then read the journey. When `volume_state` has settled, write the level-one line and, if on, the level-two line, both `pending` with `available_on` = order date + `hold_days`.
+2. **Order placed.** Credit lands after the order: `attribution_state` and `volume_state` start at `pending` and reach `processed` a minute or so later. Wait, then read the journey. Only an order whose `financial_status` is paid earns; `paid` (a gateway payment) and `marked_paid` (an admin marked it paid) both occur, so ask the brand whether marked-paid orders earn and default to yes. When `volume_state` is `processed`, write the level-one line and, if on, the level-two line, both `pending` with `available_on` = order date + `hold_days`.
 3. **Refund or cancel.** Write `reversal` lines for the same earners, in proportion to the product amount refunded, at the stored rate. A full refund nets the order to zero.
 4. **Order edited.** Recompute at the stored rate and write the difference as an `adjustment`.
 5. **Nightly sweep.** Re-read orders changed in the last few days and repair anything a missed webhook left behind. Move `pending` lines to `payable` when `available_on` has passed.

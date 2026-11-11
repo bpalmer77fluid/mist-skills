@@ -86,17 +86,19 @@ Otherwise build a Mist app to `references/commission-ledger-spec.md`. With two l
 
 # Step 5 - Prove it with one order
 
-Do this on a test gateway. If the only active payment account is real, stop and ask the user how they want to test.
+This writes a real order record that stays in the store, so get approval through `human_in_the_loop` first. No card is needed.
 
-1. Create or pick a test creator. With two levels, also a second test creator who brought in the first, recorded wherever the plan's `level2_source` reads it from. A member cannot be deleted afterwards, so give test creators an obvious name and an address at `example.com`, and tell the user before creating them.
-2. Place one order through the test creator's MySite link (`https://{{company.subdomain}}.fluid.app/my/<username>`). Open it first: that route returns a 404 for a username that does not exist, so a typo cannot pass as a credited visit. Do not test with a bare `/<username>` path; it returns the home page for any text at all.
-3. Credit lands after the order, not with it. Poll GET `/api/v202506/orders/:id/journey` for up to five minutes and read `order_journey`. **Pass:** `volume_rep` is the test creator. If `attribution_state` and `volume_state` both read `not_applicable`, the visit was never credited: stop and check the link before testing anything else.
-4. **Pass:** the ledger holds a level-one line for that order whose amount equals base times `level1_rate`, status `pending`, with the right `available_on`.
-5. With two levels, **pass:** a level-two line for the inviting creator at `level2_rate`.
-6. Refund the order. **Pass:** reversal lines bring the order's net commission to zero.
-7. Send the same order event again. **Pass:** no second line is written.
+1. Create or pick a test creator and a separate test shopper. With two levels, also a second test creator who brought in the first, recorded wherever the plan's `level2_source` reads it from. A member cannot be deleted afterwards, so give test people an obvious name and an address at `example.com`, and tell the user before creating them. Note the test creator's `username` and `legacy_user_company_id` from GET `/api/v2025-06/members`.
+2. Open the creator's page, `https://{{company.subdomain}}.fluid.app/my/<username>`, and confirm it loads. That route returns a 404 for a username that does not exist. Do not test with a bare `/<username>` path; it returns the home page for any text at all.
+3. Create a cart that carries the creator's credit: POST `/api/checkout/v2026-04/carts` with `fluid_shop`, `country_code`, the shopper's `customer_id`, `items` (`variant_id`, `quantity`) and `attribution: { "username": "<creator username>" }`. **Pass:** the response's `cart.attribution.username` is the creator. Then set the shipping address with POST `/api/checkout/v2026-04/carts/<cart_token>/address`.
+4. Turn the cart into an order marked paid: POST `/api/orders?cart_token=<cart_token>` with `{ "order": { "email": "<shopper email>", "financial_status": "marked_paid" }, "accepted_agreement_ids": [...] }`, using the ids of the required entries in `agreements` from GET `/api/carts/<cart_token>`. No gateway is called.
+5. Credit lands after the order, not with it. Poll GET `/api/v202506/orders/:id/journey` and read `order_journey`: `attribution_state` and `volume_state` move from `pending` to `processed`, which took a little over a minute on a test store. Allow five. **Pass:** `volume_rep.id` equals the test creator's `legacy_user_company_id`. `volume_rep` carries a name and that id, not a username. If both states read `not_applicable`, the cart was never credited: stop and check step 3.
+6. **Pass:** the ledger holds a level-one line for that order whose amount equals base times `level1_rate`, status `pending`, with the right `available_on`.
+7. With two levels, **pass:** a level-two line for the inviting creator at `level2_rate`.
+8. Refund the order. **Pass:** reversal lines bring the order's net commission to zero.
+9. Send the same order event again. **Pass:** no second line is written.
 
-Report each pass or fail with the order number and the ledger rows. If any check fails, fix it and rerun them all. Do not move on with a failed check.
+Report each pass or fail with the order number and the ledger rows. If any check fails, fix it and rerun them all. Do not move on with a failed check. Afterwards, tell the user they can also place one order themselves through the creator's page to see the shopper's side.
 
 # Step 6 - Launch kit
 
